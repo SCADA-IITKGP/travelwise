@@ -1,0 +1,16 @@
+services:
+  api:
+    environment:
+      LLM_MODE: hosted
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://103.42.50.41:1034/v1}
+      LLM_API_KEY: ${LLM_API_KEY:?Set LLM_API_KEY in the untracked .env file}
+      LLM_MODEL: ${LLM_MODEL:-Qwen/Qwen3-8B}
+      LLM_CA_CERT_FILE: /run/certs/group-ca.crt
+      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-512}
+    volumes:
+      - type: bind
+        source: ${LLM_CA_CERT_HOST_PATH:?Set LLM_CA_CERT_HOST_PATH to the assigned CA certificate}
+        target: /run/certs/group-ca.crt
+        read_only: true
+        bind:
+          create_host_path: false

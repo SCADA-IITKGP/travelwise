@@ -1,0 +1,2 @@
+# 10-minute demo
+0–1 min: problem and architecture. 1–2: latest published FX rate lookup. 2–3: convert a foreign-currency expense and inspect its source date. 3–4: show the policy-required response when no approved policy feed is configured. 4–5: travel request submission. 5–6: assistant trace and failure taxonomy. 6–7: provider health, cache age and stale-rate fallback. 7–8: injection/PII handling. 8–9: evaluation and operational limits. 9–10: explain how to connect an approved company policy and travel/expense system.

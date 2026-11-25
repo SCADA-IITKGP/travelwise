@@ -1,0 +1,38 @@
+services:
+  api:
+    build: {context: ., dockerfile: deployment/Dockerfile.backend}
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      LLM_MODE: ${LLM_MODE:-mock}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_CA_CERT_FILE: ${LLM_CA_CERT_FILE:-}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-30}
+      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-512}
+      TEAM_TOKEN_QUOTA: ${TEAM_TOKEN_QUOTA:-100000}
+      MAX_AGENT_STEPS: ${MAX_AGENT_STEPS:-10}
+      DATABASE_PATH: /app/data/app.db
+      POLICY_DIR: /app/data/policies
+    volumes:
+      - appdata:/app/data
+      - ./data/policies:/app/data/policies:ro
+      - ./data/corpus_metadata:/app/data/corpus_metadata:ro
+    ports: ["8000:8000"]
+    healthcheck:
+      test: ["CMD","python","-c","import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+  ui:
+    build: {context: ., dockerfile: deployment/Dockerfile.frontend}
+    depends_on:
+      api: {condition: service_healthy}
+    ports: ["${UI_PORT:-8501}:8501"]
+    healthcheck:
+      test: ["CMD","wget","-q","-O","/dev/null","http://127.0.0.1:8501/"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+volumes:
+  appdata:

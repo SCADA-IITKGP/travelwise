@@ -1,0 +1,101 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" role="img" aria-labelledby="title desc">
+  <title id="title">TravelWise project architecture</title>
+  <desc id="desc">Architecture diagram showing a React user interface, FastAPI backend, policy retrieval and agent components, local data stores, and optional external FX and language model services.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#f5f9fc"/><stop offset="1" stop-color="#edf4f7"/></linearGradient>
+    <linearGradient id="head" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#123f5b"/><stop offset="1" stop-color="#167d83"/></linearGradient>
+    <filter id="shadow" x="-15%" y="-15%" width="130%" height="140%"><feDropShadow dx="0" dy="5" stdDeviation="8" flood-color="#21465c" flood-opacity=".11"/></filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0L10 5L0 10Z" fill="#5d8292"/></marker>
+    <style>
+      text{font-family:Inter,Segoe UI,Arial,sans-serif;fill:#203b4c}.title{font-size:34px;font-weight:750;fill:white}.subtitle{font-size:15px;fill:#d7e9eb}.section{font-size:13px;font-weight:750;letter-spacing:1.4px;fill:#68808e}.box{fill:#fff;stroke:#d5e2e8;stroke-width:1.5;rx:16;filter:url(#shadow)}.boxhead{font-size:18px;font-weight:750}.body{font-size:14px;fill:#526b79}.small{font-size:12px;fill:#69818d}.pill{font-size:11px;font-weight:700;letter-spacing:.5px}.line{fill:none;stroke:#5d8292;stroke-width:2.5;marker-end:url(#arrow)}.dash{stroke-dasharray:7 6}.ui{fill:#eaf5f6;stroke:#91c4c3}.api{fill:#edf3fb;stroke:#9fb6d7}.rag{fill:#f3effb;stroke:#b8a8d9}.data{fill:#eef7ee;stroke:#a8c9a7}.external{fill:#fff4e9;stroke:#e3bf91}.note{fill:#fff9e9;stroke:#e8ce87}
+    </style>
+  </defs>
+  <rect width="1600" height="1000" fill="url(#bg)"/>
+  <rect x="0" y="0" width="1600" height="125" fill="url(#head)"/>
+  <text x="58" y="58" class="title">TravelWise · Project Architecture</text>
+  <text x="60" y="91" class="subtitle">Travel and expense policy assistant · local Docker Compose deployment</text>
+
+  <text x="62" y="166" class="section">CLIENT</text>
+  <text x="464" y="166" class="section">APPLICATION API · FASTAPI :8000</text>
+  <text x="1190" y="166" class="section">OPTIONAL EXTERNAL SERVICES</text>
+
+  <rect x="60" y="190" width="310" height="245" class="box ui"/>
+  <rect x="60" y="190" width="310" height="48" rx="16" fill="#d8eeee"/>
+  <text x="84" y="221" class="boxhead">React web interface</text>
+  <text x="84" y="270" class="body">Production UI served by Nginx</text>
+  <text x="84" y="298" class="body">• Policy assistant and citations</text>
+  <text x="84" y="326" class="body">• Expense review and FX conversion</text>
+  <text x="84" y="354" class="body">• Travel requests and operations</text>
+  <rect x="84" y="382" width="157" height="27" rx="13" fill="#c6e6e3"/>
+  <text x="98" y="400" class="pill" fill="#176d70">HOST :8502</text>
+
+  <rect x="450" y="190" width="650" height="490" class="box api"/>
+  <rect x="450" y="190" width="650" height="48" rx="16" fill="#e0e9f7"/>
+  <text x="476" y="221" class="boxhead">FastAPI application · backend/main.py</text>
+  <rect x="480" y="264" width="278" height="174" class="box"/>
+  <text x="502" y="295" class="boxhead">Agent orchestration</text>
+  <text x="502" y="326" class="body">• Safety checks and PII redaction</text>
+  <text x="502" y="354" class="body">• Selects policy and expense tools</text>
+  <text x="502" y="382" class="body">• Generates grounded answers</text>
+  <text x="502" y="410" class="body">• Returns trace and citations</text>
+  <rect x="790" y="264" width="280" height="174" class="box rag"/>
+  <text x="812" y="295" class="boxhead">Policy retrieval (RAG)</text>
+  <text x="812" y="326" class="body">• Reads approved policy files</text>
+  <text x="812" y="354" class="body">• Extracts and chunks clauses</text>
+  <text x="812" y="382" class="body">• TF-IDF + lexical ranking</text>
+  <text x="812" y="410" class="body">• Returns ranked evidence</text>
+  <rect x="480" y="466" width="278" height="174" class="box"/>
+  <text x="502" y="497" class="boxhead">Workflow endpoints</text>
+  <text x="502" y="528" class="body">• Chat and policy search</text>
+  <text x="502" y="556" class="body">• Expense validation and receipts</text>
+  <text x="502" y="584" class="body">• Travel request submission</text>
+  <text x="502" y="612" class="body">• Health, traces, and monitoring</text>
+  <rect x="790" y="466" width="280" height="174" class="box"/>
+  <text x="812" y="497" class="boxhead">Model and market adapters</text>
+  <text x="812" y="528" class="body">• Mock / evidence-only mode</text>
+  <text x="812" y="556" class="body">• Optional hosted HTTPS LLM</text>
+  <text x="812" y="584" class="body">• Published currency reference rates</text>
+  <text x="812" y="612" class="body">• Local throttling and retries</text>
+
+  <rect x="1190" y="205" width="350" height="165" class="box external"/>
+  <text x="1215" y="239" class="boxhead">Frankfurter FX service</text>
+  <text x="1215" y="270" class="body">Published reference exchange rates</text>
+  <text x="1215" y="298" class="body">Cached and freshness-labelled by API</text>
+  <text x="1215" y="339" class="small">Used by currency conversion and expenses</text>
+  <rect x="1190" y="405" width="350" height="165" class="box external"/>
+  <text x="1215" y="439" class="boxhead">Hosted language model · optional</text>
+  <text x="1215" y="470" class="body">OpenAI-compatible HTTPS endpoint</text>
+  <text x="1215" y="498" class="body">Requires configured key and CA certificate</text>
+  <text x="1215" y="539" class="small">Otherwise the app returns evidence only</text>
+
+  <rect x="60" y="540" width="310" height="140" class="box data"/>
+  <text x="84" y="575" class="boxhead">Policy source files</text>
+  <text x="84" y="606" class="body">data/policies/{organization}/</text>
+  <text x="84" y="634" class="body">PDF · DOCX · Markdown · text · HTML</text>
+  <text x="84" y="660" class="small">Mounted read-only in Compose</text>
+
+  <rect x="450" y="735" width="650" height="150" class="box data"/>
+  <text x="477" y="772" class="boxhead">Persistent application data</text>
+  <text x="477" y="805" class="body">SQLite traces / workflow records + ingested policy documents</text>
+  <text x="477" y="835" class="body">Docker Compose named volume: appdata</text>
+  <rect x="883" y="852" width="190" height="23" rx="11" fill="#d9ebd7"/>
+  <text x="900" y="868" class="pill" fill="#477447">SINGLE-INSTANCE DEMO</text>
+
+  <rect x="1190" y="640" width="350" height="245" class="box note"/>
+  <text x="1215" y="678" class="boxhead">Current corpus and scope</text>
+  <text x="1215" y="710" class="body">200 synthetic GlobalTech documents</text>
+  <text x="1215" y="739" class="body">Metadata jurisdiction is Global</text>
+  <text x="1215" y="768" class="body">No country-specific source set is loaded</text>
+  <text x="1215" y="812" class="small">Use approved policy sources before relying</text>
+  <text x="1215" y="834" class="small">on country-specific answers or entitlements.</text>
+
+  <path d="M370 310H430" class="line"/>
+  <path d="M758 350H780" class="line"/>
+  <path d="M758 550H780" class="line"/>
+  <path d="M1100 535H1170V290H1180" class="line"/>
+  <path d="M1100 560H1170V485H1180" class="line dash"/>
+  <path d="M370 600H430V350H440" class="line"/>
+  <path d="M740 680V720" class="line"/>
+  <path d="M930 640V720" class="line"/>
+  <text x="65" y="940" class="small">Deployment: Docker Compose · UI on host port 8502 · API on host port 8000 · LLM defaults to mock mode</text>
+</svg>

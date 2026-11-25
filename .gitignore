@@ -1,0 +1,13 @@
+.env
+.venv/
+.idea/
+frontend/node_modules/
+frontend/dist/
+__pycache__/
+*.pyc
+*.log
+data/app.db
+data/ingested_policies/
+evaluation/results/*.json
+certs/*.crt
+certs/*.pem

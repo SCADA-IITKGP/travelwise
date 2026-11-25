@@ -1,0 +1,45 @@
+{
+  "batches": [
+    {
+      "batch": "Batch 06",
+      "documents": 50,
+      "pdf": 50,
+      "docx": 50,
+      "passed": true
+    },
+    {
+      "batch": "Batch 07",
+      "documents": 30,
+      "pdf": 30,
+      "docx": 30,
+      "passed": true
+    },
+    {
+      "batch": "Batch 08",
+      "documents": 45,
+      "pdf": 45,
+      "docx": 45,
+      "passed": true
+    },
+    {
+      "batch": "Batch 09",
+      "documents": 50,
+      "pdf": 50,
+      "docx": 50,
+      "passed": true
+    },
+    {
+      "batch": "Batch 10",
+      "documents": 25,
+      "pdf": 25,
+      "docx": 25,
+      "passed": true
+    }
+  ],
+  "total_policy_documents": 200,
+  "actual_pdf_files": 200,
+  "actual_docx_files": 200,
+  "unique_document_ids": 200,
+  "all_documents_have_synthetic_notice": true,
+  "overall_validation_passed": true
+}
