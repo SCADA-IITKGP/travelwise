@@ -7,10 +7,23 @@ services:
       LLM_MODEL: ${LLM_MODEL:-Qwen/Qwen3-8B}
       LLM_CA_CERT_FILE: /run/certs/group-ca.crt
       LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-512}
+      EMBEDDING_MODE: ${EMBEDDING_MODE:-hybrid}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-https://103.42.50.41:1035/v1}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-bge-small-en-v1.5}
+      EMBEDDING_CA_CERT_FILE: /run/certs/embedding-ca.crt
+      EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE:-16}
+      EMBEDDING_MAX_TOKENS: ${EMBEDDING_MAX_TOKENS:-512}
     volumes:
       - type: bind
         source: ${LLM_CA_CERT_HOST_PATH:?Set LLM_CA_CERT_HOST_PATH to the assigned CA certificate}
         target: /run/certs/group-ca.crt
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${EMBEDDING_CA_CERT_HOST_PATH:-${LLM_CA_CERT_HOST_PATH}}
+        target: /run/certs/embedding-ca.crt
         read_only: true
         bind:
           create_host_path: false

@@ -1,11 +1,35 @@
 from pydantic import BaseModel, Field
 from typing import Optional, Literal
 
+class TravelContext(BaseModel):
+    destination_country: Optional[str] = Field(default=None, max_length=100)
+    employee_grade: Optional[str] = Field(default=None, max_length=32)
+    trip_type: Optional[str] = Field(default=None, max_length=32)
+
 class ChatRequest(BaseModel):
     query: str = Field(min_length=3, max_length=5000)
     employee_id: str = "DEMO-EMP"
-    grade: str = "M6"
+    grade: Optional[str] = None
     organization_id: str = Field(default="default", min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+    travel_context: Optional[TravelContext] = None
+    model: Optional[str] = Field(default=None, max_length=128)
+
+
+class ModelSelectionRequest(BaseModel):
+    selection: Optional[str] = Field(default=None, max_length=128)
+    mode: Optional[Literal["mock", "hosted"]] = None
+    model: Optional[str] = Field(default=None, max_length=128)
+    base_url: Optional[str] = Field(default=None, max_length=500)
+    api_key: Optional[str] = Field(default=None, max_length=500)
+    ca_cert_file: Optional[str] = Field(default=None, max_length=500)
+
+
+class EmbeddingConfigRequest(BaseModel):
+    mode: Optional[Literal["tfidf", "hybrid", "hosted"]] = None
+    model: Optional[str] = Field(default=None, max_length=128)
+    base_url: Optional[str] = Field(default=None, max_length=500)
+    api_key: Optional[str] = Field(default=None, max_length=500)
+    ca_cert_file: Optional[str] = Field(default=None, max_length=500)
 
 class TravelRequest(BaseModel):
     employee_id: str

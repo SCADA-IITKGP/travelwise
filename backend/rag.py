@@ -9,8 +9,10 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 from .config import DATA_DIR, INGESTION_DIR, POLICY_DIR
+from . import embeddings
 
 _indexes = {}
+_embedding_cache = {}
 _metadata_cache = {}
 _ORG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$")
 SUPPORTED_EXTENSIONS = {".txt", ".md", ".html", ".htm", ".pdf", ".docx"}
@@ -211,6 +213,7 @@ def load_docs(organization_id="default"):
                              "jurisdiction": metadata.get("jurisdiction"), "version": metadata.get("version"),
                              "effective_date": metadata.get("effective_date"),
                              "synthetic": str(metadata.get("synthetic", "")).lower() == "true",
+                             "title_text": " ".join(filter(None, [metadata.get("title", ""), metadata.get("description", "")])),
                              "search_text": " ".join([chunk, *search_fields])})
     return docs
 
@@ -224,31 +227,78 @@ def _index_for(organization_id):
     signature = tuple((str(p), p.stat().st_mtime_ns, p.stat().st_size) for p in files)
     cached = _indexes.get(org)
     if cached and cached[0] == signature:
-        return cached[1:]
+        return (signature, *cached[1:])
     docs = load_docs(org)
     if not docs:
         _indexes.pop(org, None)
-        return [], None, None
+        _embedding_cache.pop(org, None)
+        return signature, [], None, None
     vectorizer = TfidfVectorizer(ngram_range=(1, 2), stop_words="english")
     matrix = vectorizer.fit_transform([d.get("search_text", d["text"]) for d in docs])
     _indexes[org] = (signature, docs, vectorizer, matrix)
-    return docs, vectorizer, matrix
+    return signature, docs, vectorizer, matrix
+
+
+def _embedding_scores(org, signature, docs, query):
+    """Return 384-d cosine similarity scores from bge-small-en-v1.5 when configured."""
+    if not embeddings.is_configured():
+        return None
+    model = embeddings.current_model()
+    cache_key = (org, model)
+    cached = _embedding_cache.get(cache_key)
+    try:
+        if cached and cached[0] == signature:
+            doc_vectors = cached[1]
+        else:
+            doc_vectors = embeddings.embed_texts([d.get("search_text", d["text"]) for d in docs])
+            _embedding_cache[cache_key] = (signature, doc_vectors)
+        query_vector = embeddings.embed_texts([query])[0]
+        return cosine_similarity([query_vector], doc_vectors)[0]
+    except embeddings.EmbeddingError:
+        return None
 
 
 def retrieve(query, grade="M6", top_k=4, organization_id="default"):
-    docs, vectorizer, matrix = _index_for(organization_id)
+    org = normalize_organization(organization_id)
+    signature, docs, vectorizer, matrix = _index_for(org)
     if not docs:
         return []
     qset = set(tokens(query))
     qvec = vectorizer.transform([query])
     vs = cosine_similarity(qvec, matrix)[0]
+    sem = _embedding_scores(org, signature, docs, query)
+    emb_mode = embeddings.current_mode()
     ranked = []
     for i, doc in enumerate(docs):
         dt = tokens(doc.get("search_text", doc["text"]))
         overlap = sum(1 for t in qset if t in dt)
         lexical = overlap / (overlap + 1.2 + 0.25 * len(dt) / 20) if overlap else 0
+        tt = set(tokens(doc.get("title_text") or doc.get("title", "")))
+        title_overlap = sum(1 for t in qset if t in tt)
+        title_boost = 0.2 * (title_overlap / len(qset)) if qset and title_overlap else 0
         bonus = 0.12 if doc["grade"] in (grade, "ALL") else -0.2
-        score = 0.55 * float(vs[i]) + 0.35 * lexical + bonus
+        if sem is not None and emb_mode == "hosted":
+            score = float(sem[i]) + title_boost + bonus
+        elif sem is not None:
+            score = 0.45 * float(sem[i]) + 0.30 * float(vs[i]) + 0.25 * lexical + title_boost + bonus
+        else:
+            score = 0.55 * float(vs[i]) + 0.35 * lexical + title_boost + bonus
         ranked.append((score, doc))
     ranked.sort(key=lambda x: x[0], reverse=True)
-    return [{"score": round(score, 4), **doc} for score, doc in ranked[:top_k] if score > 0]
+    selected = []
+    seen_docs = set()
+    overflow = []
+    for score, doc in ranked:
+        if score <= 0:
+            continue
+        doc_key = doc.get("document_id") or doc["id"]
+        if doc_key not in seen_docs:
+            seen_docs.add(doc_key)
+            selected.append({"score": round(score, 4), **doc})
+            if len(selected) >= top_k:
+                break
+        else:
+            overflow.append({"score": round(score, 4), **doc})
+    if len(selected) < top_k:
+        selected.extend(overflow[: top_k - len(selected)])
+    return selected

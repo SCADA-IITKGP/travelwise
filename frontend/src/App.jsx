@@ -133,7 +133,7 @@ function App() {
       <div className="page-scroll">
         {error && <div className="global-error"><span>{error}</span><Button variant="text" icon={RefreshCw} onClick={loadWorkspace}>Retry</Button></div>}
         {page === 'overview' && <Overview health={health} policy={policy} analytics={analytics} setPage={setPage} org={org} />}
-        {page === 'assistant' && <Assistant org={org} policy={policy} onPolicyChanged={setPolicy} health={health} />}
+        {page === 'assistant' && <Assistant org={org} policy={policy} onPolicyChanged={setPolicy} health={health} onHealthChanged={setHealth} />}
         {page === 'expense' && <Expense org={org} />}
         {page === 'travel' && <Travel />}
         {page === 'fx' && <Rates />}
@@ -154,7 +154,7 @@ function Overview({ health, policy, analytics, setPage, org }) {
     { label: 'Assistant requests', value: analytics?.total_queries ?? '—', note: `${analytics?.success_rate ? Math.round(analytics.success_rate * 100) : 0}% successful`, icon: MessageSquareText, color: 'blue' },
     { label: 'Policy documents', value: policy?.document_count?.toLocaleString() ?? '—', note: policy?.synthetic_document_count ? 'Synthetic evaluation corpus' : 'Approved source files', icon: FileCheck2, color: 'violet' },
     { label: 'Average response', value: analytics?.average_latency_ms ? `${Math.round(analytics.average_latency_ms)} ms` : '—', note: 'Across recent queries', icon: Clock3, color: 'amber' },
-    { label: 'Service status', value: health ? 'Operational' : 'Checking', note: health?.llm_mode === 'hosted' && health?.hosted_model?.configured ? 'Hosted responses enabled' : 'Evidence-only mode', icon: Activity, color: 'green' },
+    { label: 'Service status', value: health ? 'Operational' : 'Checking', note: health?.llm_mode === 'hosted' && health?.hosted_model?.configured ? `${health.hosted_model.model || 'Qwen/Qwen3-8B'} enabled` : 'Evidence-only mode', icon: Activity, color: 'green' },
   ]
   const quick = [
     { id: 'assistant', title: 'Ask about a policy', desc: 'Get a grounded answer with source citations.', icon: MessageSquareText, tone: 'blue' },
@@ -173,30 +173,84 @@ function Overview({ health, policy, analytics, setPage, org }) {
   </div>
 }
 
-function Assistant({ org, policy, onPolicyChanged, health }) {
+function Assistant({ org, policy, onPolicyChanged, health, onHealthChanged }) {
   const [destinationCountry, setDestinationCountry] = useState('')
   const [employeeGrade, setEmployeeGrade] = useState('')
   const [tripType, setTripType] = useState('')
   const [query, setQuery] = useState('')
   const [history, setHistory] = useState([])
   const [loading, setLoading] = useState(false)
+  const [modelBusy, setModelBusy] = useState(false)
   const [error, setError] = useState('')
   const [ingestOpen, setIngestOpen] = useState(false)
-  const generatedResponsesAvailable = health?.llm_mode === 'hosted' && health?.hosted_model?.configured === true
+  const [providerOpen, setProviderOpen] = useState(false)
+  const hostedInfo = health?.hosted_model || {}
+  const embeddingInfo = health?.embeddings || {}
+  const availableModels = hostedInfo.available_models?.length ? hostedInfo.available_models : [
+    { id: 'evidence-only', label: 'Evidence-only (No model)', mode: 'mock', model: null },
+    { id: 'Qwen/Qwen3-8B', label: 'Qwen/Qwen3-8B (Hosted)', mode: 'hosted', model: 'Qwen/Qwen3-8B' },
+  ]
+  const selectedModel = hostedInfo.active_selection || (health?.llm_mode === 'hosted' && hostedInfo.configured ? (hostedInfo.model || 'Qwen/Qwen3-8B') : 'evidence-only')
+  const generatedResponsesAvailable = health?.llm_mode === 'hosted' && hostedInfo.configured === true
   const prompts = ['What evidence do I need for a hotel expense?', 'How should I handle a multi-country trip?', 'What applies to a historical policy version?']
+
+  const handleModelSelect = async (nextSelection) => {
+    setError('')
+    if (nextSelection === 'evidence-only') {
+      setModelBusy(true)
+      try {
+        await post('/api/v1/llm/select', { selection: 'evidence-only', mode: 'mock' })
+        onHealthChanged?.(await get('/health'))
+      } catch (e) { setError(e.message || 'Could not switch model mode.') }
+      finally { setModelBusy(false) }
+      return
+    }
+    if (!hostedInfo.configured) {
+      setProviderOpen(true)
+      return
+    }
+    setModelBusy(true)
+    try {
+      await post('/api/v1/llm/select', { selection: nextSelection, mode: 'hosted', model: nextSelection })
+      onHealthChanged?.(await get('/health'))
+    } catch (e) {
+      setError(e.message || 'Could not activate hosted model.')
+      setProviderOpen(true)
+    } finally { setModelBusy(false) }
+  }
+
   const ask = async (value = query) => {
-    if (!value.trim() || loading) return
+    const cleanQuery = value.trim()
+    if (!cleanQuery || loading) return
     setLoading(true); setError(''); setQuery('')
-    const userTurn = { role: 'user', text: value }
+    const travelContext = {}
+    if (destinationCountry) travelContext.destination_country = destinationCountry
+    if (employeeGrade) travelContext.employee_grade = employeeGrade
+    if (tripType) travelContext.trip_type = tripType
+    const hasContext = Object.keys(travelContext).length > 0
+    const userTurn = { role: 'user', text: cleanQuery }
     setHistory((items) => [...items, userTurn])
     try {
-      const context = `Destination country: ${destinationCountry || 'not provided'}. Employee grade: ${employeeGrade || 'not provided'}. Trip type: ${tripType || 'not provided'}. Do not assume grade-dependent entitlements.`
-      const contextualQuery = context ? `${value}\n\nTravel context: ${context}` : value
       if (generatedResponsesAvailable) {
-        const result = await post('/api/v1/ai/chat', { query: contextualQuery, employee_id: 'EMP1001', grade: employeeGrade || 'Unspecified', organization_id: org })
+        const payload = {
+          query: cleanQuery,
+          employee_id: 'EMP1001',
+          organization_id: org,
+          model: hostedInfo.model || 'Qwen/Qwen3-8B',
+          ...(employeeGrade ? { grade: employeeGrade } : {}),
+          ...(hasContext ? { travel_context: travelContext } : {}),
+        }
+        const result = await post('/api/v1/ai/chat', payload)
         setHistory((items) => [...items, { role: 'assistant', result }])
       } else {
-        const evidence = await postQuery('/api/v1/ai/policy-search', { query: contextualQuery, grade: employeeGrade || 'Unspecified', organization_id: org })
+        const contextTerms = [destinationCountry, employeeGrade, tripType].filter(Boolean)
+        const searchQuery = hasContext ? `${cleanQuery} ${contextTerms.join(' ')}` : cleanQuery
+        const params = {
+          query: searchQuery,
+          organization_id: org,
+          ...(employeeGrade ? { grade: employeeGrade } : {}),
+        }
+        const evidence = await postQuery('/api/v1/ai/policy-search', params)
         setHistory((items) => [...items, { role: 'assistant', result: { mode: 'evidence', ...evidence } }])
       }
     } catch (e) { setError(e.message || 'The request could not be completed.') }
@@ -206,11 +260,11 @@ function Assistant({ org, policy, onPolicyChanged, health }) {
   const latestDocs = latestResult?.documents || latestResult?.tool_results?.policy_search?.documents || []
 
   return <div className="page-content">
-    <PageHeading eyebrow="POLICY INTELLIGENCE" title="Policy assistant" subtitle="Answers grounded in your organization’s policy documents, with the sources shown alongside." action={<div className="assistant-heading-actions"><span className="secure-label"><ShieldCheck size={15} /> Evidence-backed</span><Button variant="secondary" icon={Upload} onClick={() => setIngestOpen(true)}>Add documents</Button></div>} />
-    {!generatedResponsesAvailable && <div className="model-notice"><div className="model-notice-icon"><Sparkles size={16} /></div><div><strong>Evidence-only mode</strong><span>No hosted language model is configured. I can only use retrieved policy evidence; connect an approved provider before enabling generated responses.</span></div><span className="mode-chip">NO MODEL</span></div>}
+    <PageHeading eyebrow="POLICY INTELLIGENCE" title="Policy assistant" subtitle="Answers grounded in your organization’s policy documents, with the sources shown alongside." action={<div className="assistant-heading-actions"><span className="secure-label"><ShieldCheck size={15} /> Evidence-backed</span><Button variant="secondary" icon={Sparkles} onClick={() => setProviderOpen(true)}>Model &amp; embeddings</Button><Button variant="secondary" icon={Upload} onClick={() => setIngestOpen(true)}>Add documents</Button></div>} />
+    {!generatedResponsesAvailable && <div className="model-notice"><div className="model-notice-icon"><Sparkles size={16} /></div><div><strong>Evidence-only mode</strong><span>No hosted language model is configured. Select <code>Qwen/Qwen3-8B</code> and connect your approved provider key &amp; CA certificate (<code>vm04-ca.crt</code>) before enabling generated responses.</span></div><Button variant="secondary" onClick={() => setProviderOpen(true)}>Select model</Button><span className="mode-chip">NO MODEL</span></div>}
     <div className="assistant-layout">
       <section className="assistant-main card">
-        <div className="assistant-toolbar"><div className="assistant-agent"><div className="agent-avatar"><Sparkles size={17} /></div><div><strong>TravelWise assistant</strong><span><i className="online-dot" /> Ready to help</span></div></div><div className="assistant-context"><strong className="assistant-context-title" style={{ fontSize: 9, color: '#617480', whiteSpace: 'nowrap' }}>Travel context</strong><Field label="Destination country"><Select value={destinationCountry} onChange={(e) => setDestinationCountry(e.target.value)}><option value="">Select country</option>{DESTINATION_COUNTRIES.map((country) => <option key={country}>{country}</option>)}</Select></Field><Field label="Employee grade"><Select value={employeeGrade} onChange={(e) => setEmployeeGrade(e.target.value)}><option value="">Select grade</option>{EMPLOYEE_GRADES.map((grade) => <option key={grade}>{grade}</option>)}</Select></Field><Field label="Trip type"><Select value={tripType} onChange={(e) => setTripType(e.target.value)}><option value="">Select trip type</option><option>Domestic</option><option>International</option></Select></Field></div></div>
+        <div className="assistant-toolbar"><div className="assistant-agent"><div className="agent-avatar"><Sparkles size={17} /></div><div><strong>TravelWise assistant</strong><span><i className="online-dot" /> {generatedResponsesAvailable ? `${selectedModel} active` : 'Ready to help'}</span></div></div><div className="assistant-context"><Field label="Select model"><Select value={selectedModel} disabled={modelBusy} onChange={(e) => handleModelSelect(e.target.value)}>{availableModels.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</Select></Field><strong className="assistant-context-title" style={{ fontSize: 9, color: '#617480', whiteSpace: 'nowrap' }}>Travel context</strong><Field label="Destination country"><Select value={destinationCountry} onChange={(e) => setDestinationCountry(e.target.value)}><option value="">Select country</option>{DESTINATION_COUNTRIES.map((country) => <option key={country}>{country}</option>)}</Select></Field><Field label="Employee grade" hint={employeeGrade ? `${employeeGrade} selected; use its assigned policy rules.` : 'Optional; leave blank for direct questions or if unknown.'}><Select value={employeeGrade} onChange={(e) => setEmployeeGrade(e.target.value)}><option value="">Select grade</option>{EMPLOYEE_GRADES.map((grade) => <option key={grade}>{grade}</option>)}</Select></Field><Field label="Trip type"><Select value={tripType} onChange={(e) => setTripType(e.target.value)}><option value="">Select trip type</option><option>Domestic</option><option>International</option></Select></Field></div></div>
         <div className="conversation">
           {history.length === 0 ? <div className="assistant-welcome"><div className="assistant-welcome-icon"><Sparkles size={22} /></div><h2>What would you like to know?</h2><p>{generatedResponsesAvailable ? 'Ask about travel rules, expenses or policy exceptions. I’ll show the documents that support the answer.' : 'Search your organization’s policy evidence. Generated answers become available when an approved provider is configured.'}</p><div className="prompt-list">{prompts.map((prompt) => <button key={prompt} onClick={() => ask(prompt)}>{prompt}<ArrowRight size={14} /></button>)}</div></div> : history.map((item, index) => item.role === 'user' ? <div className="chat-row chat-user" key={index}><div className="chat-user-bubble">{item.text}</div><div className="mini-user-avatar">S</div></div> : <div className="chat-row chat-assistant" key={index}><div className="chat-assistant-avatar"><Sparkles size={15} /></div><div className="chat-answer"><div className="answer-meta"><strong>{item.result.mode === 'evidence' ? 'Retrieved policy evidence' : 'TravelWise assistant'}</strong><span>{item.result.mode === 'evidence' ? `${item.result.documents?.length || 0} sources · evidence only` : `${item.result.latency_ms} ms · ${item.result.status}`}</span></div>{item.result.mode === 'evidence' ? item.result.documents?.length ? <div className="evidence-results">{item.result.documents.map((doc) => <article className="evidence-result" key={doc.id}><div><strong>{doc.title || doc.document_id}</strong><code>{doc.id}</code></div><p>{doc.text}</p><small>{[doc.document_id, doc.jurisdiction, doc.version && `v${doc.version}`].filter(Boolean).join(' · ')}</small></article>)}</div> : <p>No matching policy evidence was found, so no policy conclusion is available.</p> : <p>{item.result.answer}</p>}{item.result.citations?.length > 0 && <div className="answer-citations"><span><BookOpen size={14} /> Sources</span>{item.result.citations.map((citation) => <code key={citation}>{citation}</code>)}</div>}</div></div>)}
           {loading && <div className="chat-row chat-assistant"><div className="chat-assistant-avatar"><Sparkles size={15} /></div><div className="thinking"><LoaderCircle size={16} className="spin" /> Searching policy evidence and preparing an answer…</div></div>}
@@ -221,10 +275,76 @@ function Assistant({ org, policy, onPolicyChanged, health }) {
       <aside className="assistant-side">
         <div className="side-card card"><div className="side-card-title"><div className="side-card-icon"><BookOpen size={17} /></div><div><strong>Knowledge source</strong><span>{org}</span></div><BadgeCheck size={17} className="verified-icon" /></div><div className="knowledge-count"><strong>{policy?.document_count ?? '—'}</strong><span>policy documents</span></div><div className="knowledge-meter"><i style={{ width: `${Math.min(100, (policy?.document_count || 0) / (policy?.full_corpus_expected_documents || 500) * 100)}%` }} /></div><div className="knowledge-meta"><span>Corpus coverage</span><strong>{policy ? `${Math.min(100, Math.round(policy.document_count / (policy.full_corpus_expected_documents || 500) * 100))}%` : '—'}</strong></div>{policy?.synthetic_document_count > 0 && <div className="test-data-note"><CircleHelp size={14} /> Synthetic test content</div>}</div>
         <div className="side-card card"><div className="side-card-heading"><strong>Response principles</strong><span>Every answer follows these checks</span></div><div className="principle"><div className="principle-check"><Check size={13} /></div><span>Uses retrieved policy evidence</span></div><div className="principle"><div className="principle-check"><Check size={13} /></div><span>Shows source citations</span></div><div className="principle"><div className="principle-check"><Check size={13} /></div><span>Escalates when evidence is missing</span></div><div className="principle"><div className="principle-check"><Check size={13} /></div><span>Never initiates a payment</span></div></div>
+        <div className="side-card card"><div className="side-card-heading"><strong>Model &amp; retrieval</strong><span>Active inference and vector config</span></div><div className="principle"><div className="principle-check"><Sparkles size={13} /></div><span>Chat: {generatedResponsesAvailable ? (hostedInfo.model || 'Qwen/Qwen3-8B') : `Evidence-only (${hostedInfo.model || 'Qwen/Qwen3-8B'} ready)`}</span></div><div className="principle"><div className="principle-check"><Search size={13} /></div><span>Embeddings: {embeddingInfo.configured ? `${embeddingInfo.model} (${embeddingInfo.dimensions || 384}d)` : `${embeddingInfo.model || 'bge-small-en-v1.5'} (TF-IDF fallback)`}</span></div></div>
         {latestDocs.length > 0 && <div className="side-card card retrieved-card"><div className="side-card-heading"><strong>Retrieved evidence</strong><span>Most recent response</span></div>{latestDocs.slice(0, 4).map((doc) => <div className="retrieved-source" key={doc.id}><div className="source-file-icon"><FileText size={14} /></div><div><strong>{doc.document_id || doc.id}</strong><span>{doc.title || doc.source_file}</span><small>{[doc.jurisdiction, doc.version && `v${doc.version}`].filter(Boolean).join(' · ')}</small></div></div>)}</div>}
       </aside>
     </div>
     {ingestOpen && <IngestModal org={org} onClose={() => setIngestOpen(false)} onComplete={onPolicyChanged} />}
+    {providerOpen && <ProviderConfigModal hosted={hostedInfo} embeddings={embeddingInfo} onClose={() => setProviderOpen(false)} onSaved={async () => { onHealthChanged?.(await get('/health')); setProviderOpen(false) }} />}
+  </div>
+}
+
+function ProviderConfigModal({ hosted, embeddings, onClose, onSaved }) {
+  const [llmModel, setLlmModel] = useState(hosted?.model || 'Qwen/Qwen3-8B')
+  const [llmBaseUrl, setLlmBaseUrl] = useState(hosted?.endpoint_url || 'https://103.42.50.41:1034/v1')
+  const [llmCaCert, setLlmCaCert] = useState(hosted?.ca_certificate_path || 'C:/Users/SR/Downloads/vm04-ca.crt')
+  const [llmApiKey, setLlmApiKey] = useState('')
+  const [embMode, setEmbMode] = useState(embeddings?.mode || 'hybrid')
+  const [embModel, setEmbModel] = useState(embeddings?.model || 'bge-small-en-v1.5')
+  const [embBaseUrl, setEmbBaseUrl] = useState(embeddings?.endpoint_url || 'https://103.42.50.41:1035/v1')
+  const [embCaCert, setEmbCaCert] = useState(embeddings?.ca_certificate_path || 'C:/Users/SR/Downloads/vm02-ca.crt')
+  const [embApiKey, setEmbApiKey] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  const save = async (e) => {
+    e.preventDefault()
+    setBusy(true); setError('')
+    try {
+      await post('/api/v1/llm/select', {
+        selection: llmModel,
+        mode: 'hosted',
+        model: llmModel,
+        base_url: llmBaseUrl,
+        ca_cert_file: llmCaCert,
+        ...(llmApiKey.trim() ? { api_key: llmApiKey.trim() } : {}),
+      })
+      if (embApiKey.trim() || embMode !== embeddings?.mode || embBaseUrl !== embeddings?.endpoint_url || embModel !== embeddings?.model) {
+        await post('/api/v1/embeddings/config', {
+          mode: embMode,
+          model: embModel,
+          base_url: embBaseUrl,
+          ca_cert_file: embCaCert,
+          ...(embApiKey.trim() ? { api_key: embApiKey.trim() } : {}),
+        })
+      }
+      await onSaved()
+    } catch (err) {
+      setError(err.message || 'Could not connect hosted provider.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}>
+    <section className="ingest-modal card" role="dialog" aria-modal="true" aria-labelledby="provider-title">
+      <div className="modal-heading"><div><div className="eyebrow">HOSTED PROVIDERS</div><h2 id="provider-title">Connect model &amp; embeddings</h2><p>Configure hosted chat (<code>Qwen/Qwen3-8B</code>) and Capstone retrieval embeddings (<code>bge-small-en-v1.5</code>) with CA verification.</p></div><button className="icon-button" onClick={onClose} aria-label="Close dialog"><X size={18} /></button></div>
+      <form onSubmit={save}>
+        <div className="form-grid">
+          <Field label="Chat model ID"><input value={llmModel} onChange={(e) => setLlmModel(e.target.value)} required /></Field>
+          <Field label="Chat base URL"><input value={llmBaseUrl} onChange={(e) => setLlmBaseUrl(e.target.value)} required /></Field>
+          <Field label="Chat CA cert (vm04-ca.crt)" className="field-wide"><input value={llmCaCert} onChange={(e) => setLlmCaCert(e.target.value)} required /></Field>
+          <Field label="Group API key" className="field-wide" hint="Kept in API process memory only; never logged or saved to traces."><input type="password" placeholder={hosted?.configured ? 'Key already configured (leave blank to keep)' : 'YOUR_GROUP_API_KEY'} value={llmApiKey} onChange={(e) => setLlmApiKey(e.target.value)} /></Field>
+          <Field label="Embedding model ID"><input value={embModel} onChange={(e) => setEmbModel(e.target.value)} required /></Field>
+          <Field label="Embedding mode"><Select value={embMode} onChange={(e) => setEmbMode(e.target.value)}><option value="hybrid">Hybrid (bge + TF-IDF)</option><option value="hosted">Hosted (bge only)</option><option value="tfidf">TF-IDF only</option></Select></Field>
+          <Field label="Embedding base URL" className="field-wide"><input value={embBaseUrl} onChange={(e) => setEmbBaseUrl(e.target.value)} /></Field>
+          <Field label="Embedding CA cert (vm02-ca.crt)" className="field-wide"><input value={embCaCert} onChange={(e) => setEmbCaCert(e.target.value)} /></Field>
+          <Field label="Embedding API key" className="field-wide" hint="Optional; 384-d vectors, up to 16 texts/batch, <=512 tokens."><input type="password" placeholder={embeddings?.configured ? 'Key already configured (leave blank to keep)' : 'YOUR_EMBEDDINGS_KEY'} value={embApiKey} onChange={(e) => setEmbApiKey(e.target.value)} /></Field>
+        </div>
+        {error && <div className="inline-error">{error}</div>}
+        <div className="modal-actions"><Button type="button" variant="secondary" onClick={onClose}>Cancel</Button><Button icon={busy ? LoaderCircle : Check} disabled={busy}>{busy ? 'Connecting…' : `Enable ${llmModel}`}</Button></div>
+      </form>
+    </section>
   </div>
 }
 
@@ -298,7 +418,7 @@ function Operations({ org, health, policy, analytics, refresh }) {
   return <div className="page-content"><PageHeading eyebrow="SYSTEM HEALTH" title="Operations" subtitle="Monitor service health, policy coverage and recent assistant activity." action={<Button variant="secondary" icon={loading ? LoaderCircle : RefreshCw} onClick={load} disabled={loading}>Refresh</Button>} />
     {error && <div className="inline-error">{error}</div>}
     <div className="ops-kpis"><div className="ops-kpi card"><span>Total assistant requests</span><strong>{analytics?.total_queries ?? '—'}</strong><small>Recorded traces</small></div><div className="ops-kpi card"><span>Successful</span><strong className="text-green">{analytics?.successful ?? '—'}</strong><small>{analytics?.success_rate != null ? `${Math.round(analytics.success_rate * 100)}% success rate` : 'No data yet'}</small></div><div className="ops-kpi card"><span>Failed or degraded</span><strong className="text-amber">{analytics?.failed ?? '—'}</strong><small>Requires attention</small></div><div className="ops-kpi card"><span>Average latency</span><strong>{analytics?.average_latency_ms ? `${Math.round(analytics.average_latency_ms)} ms` : '—'}</strong><small>Recent requests</small></div></div>
-    <div className="ops-grid"><section className="card ops-card"><div className="ops-card-header"><div><h2>Service health</h2><p>Current provider and model status</p></div><span className={`status-pill ${health ? 'status-healthy' : 'status-review'}`}><i />{health ? 'Healthy' : 'Unavailable'}</span></div><div className="health-row"><div className="health-icon health-blue"><Activity size={17} /></div><div className="health-label"><strong>API service</strong><span>Rate limit · {health?.rate_limit?.limit ?? '—'} requests / {health?.rate_limit?.window_seconds ?? '—'} sec</span></div><span className="health-value">{health?.status || 'Unknown'}</span></div><div className="health-row"><div className="health-icon health-purple"><Sparkles size={17} /></div><div className="health-label"><strong>Response model</strong><span>{model?.model || 'No hosted model configured'}</span></div><span className="health-value">{model?.mode || '—'}</span></div><div className="health-row"><div className="health-icon health-teal"><Globe2 size={17} /></div><div className="health-label"><strong>FX provider</strong><span>{fx?.provider || 'Frankfurter'} · {fx?.cache_entries ?? 0} cached rates</span></div><span className="health-value">{fx?.circuit_breaker || '—'}</span></div><div className="health-row"><div className="health-icon health-green"><BookOpen size={17} /></div><div className="health-label"><strong>Policy source</strong><span>{policy?.document_count ?? 0} docs · {policy?.clause_count ?? 0} chunks · {org}</span></div><span className="health-value">{policy?.status || '—'}</span></div></section>
+    <div className="ops-grid"><section className="card ops-card"><div className="ops-card-header"><div><h2>Service health</h2><p>Current provider and model status</p></div><span className={`status-pill ${health ? 'status-healthy' : 'status-review'}`}><i />{health ? 'Healthy' : 'Unavailable'}</span></div><div className="health-row"><div className="health-icon health-blue"><Activity size={17} /></div><div className="health-label"><strong>API service</strong><span>Rate limit · {health?.rate_limit?.limit ?? '—'} requests / {health?.rate_limit?.window_seconds ?? '—'} sec</span></div><span className="health-value">{health?.status || 'Unknown'}</span></div><div className="health-row"><div className="health-icon health-purple"><Sparkles size={17} /></div><div className="health-label"><strong>Response model</strong><span>{model?.model || 'Qwen/Qwen3-8B'} · {model?.endpoint_host || 'not configured'}</span></div><span className="health-value">{model?.configured ? model?.mode : 'evidence-only'}</span></div><div className="health-row"><div className="health-icon health-blue"><Search size={17} /></div><div className="health-label"><strong>Embedding model</strong><span>{health?.embeddings?.model || 'bge-small-en-v1.5'} · {health?.embeddings?.dimensions || 384}d · {health?.embeddings?.configured ? health?.embeddings?.mode : 'tfidf fallback'}</span></div><span className="health-value">{health?.embeddings?.configured ? 'ready' : 'unconfigured'}</span></div><div className="health-row"><div className="health-icon health-teal"><Globe2 size={17} /></div><div className="health-label"><strong>FX provider</strong><span>{fx?.provider || 'Frankfurter'} · {fx?.cache_entries ?? 0} cached rates</span></div><span className="health-value">{fx?.circuit_breaker || '—'}</span></div><div className="health-row"><div className="health-icon health-green"><BookOpen size={17} /></div><div className="health-label"><strong>Policy source</strong><span>{policy?.document_count ?? 0} docs · {policy?.clause_count ?? 0} chunks · {org}</span></div><span className="health-value">{policy?.status || '—'}</span></div></section>
       <section className="card ops-card"><div className="ops-card-header"><div><h2>Failure categories</h2><p>Recent query outcomes by category</p></div><BarChart3 size={18} className="muted-icon" /></div>{Object.keys(failures).length ? <div className="failure-bars">{Object.entries(failures).map(([name, value]) => <div className="failure-row" key={name}><div><span>{name.replaceAll('_', ' ')}</span><strong>{value}</strong></div><div className="bar-track"><i style={{ width: `${(value / maxFailure) * 100}%` }} /></div></div>)}</div> : <div className="empty-state"><div><ShieldCheck size={22} /></div><strong>No failures recorded</strong><span>Failure categories will appear here as requests are processed.</span></div>}</section></div>
     <section className="card trace-card"><div className="ops-card-header"><div><h2>Recent assistant activity</h2><p>Audit traces for policy questions</p></div><span className="trace-count">{traces.length} records</span></div>{traces.length ? <div className="table-wrap"><table><thead><tr><th>Trace ID</th><th>Created</th><th>Employee</th><th>Status</th><th>Steps</th><th>Latency</th><th>Category</th></tr></thead><tbody>{traces.map((row) => <tr key={row.trace_id} onClick={() => get(`/api/v1/traces/${row.trace_id}`).then(setSelected)}><td className="mono">{row.trace_id}</td><td>{dateLabel(row.created_at)}</td><td>{row.employee_id}</td><td><span className={`trace-status trace-${row.status}`}>{row.status}</span></td><td>{row.steps}</td><td>{row.latency_ms} ms</td><td>{row.failure_category || '—'}</td></tr>)}</tbody></table></div> : <div className="table-empty"><FileText size={20} /><strong>No assistant traces yet</strong><span>Queries to the policy assistant will appear here.</span></div>}{selected && <div className="trace-detail"><div><strong>Trace details · {selected.trace_id}</strong><button className="icon-button" onClick={() => setSelected(null)}><X size={16} /></button></div><pre>{JSON.stringify(selected.trace, null, 2)}</pre></div>}</section>
     {policy?.synthetic_document_count > 0 && <div className="ops-disclaimer"><CircleHelp size={15} /> The {policy.synthetic_document_count} loaded GlobalTech policies are synthetic test data. The supplied guide describes {policy.full_corpus_expected_documents} documents; {policy.document_count} are currently loaded.</div>}

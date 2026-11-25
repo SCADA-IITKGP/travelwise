@@ -1,10 +1,10 @@
 from fastapi import FastAPI,HTTPException,Query,UploadFile,File,Form
 from fastapi.middleware.cors import CORSMiddleware
-from .schemas import ChatRequest,TravelRequest,ExpenseValidationRequest,ReceiptTextRequest,ApprovalRequest
-from . import store,tools,market_data,rate_limit
+from .schemas import ChatRequest,TravelRequest,ExpenseValidationRequest,ReceiptTextRequest,ApprovalRequest,ModelSelectionRequest,EmbeddingConfigRequest
+from . import store,tools,market_data,rate_limit,embeddings
 from .agents import run_agent
-from .llm import status as llm_status
-from .config import INGESTION_DIR,LLM_MODE,MAX_AGENT_STEPS
+from .llm import status as llm_status, select_model as llm_select_model
+from .config import INGESTION_DIR,MAX_AGENT_STEPS
 from .rag import SUPPORTED_EXTENSIONS,extract_text,normalize_organization
 import json
 import re
@@ -17,14 +17,54 @@ app.add_middleware(rate_limit.InMemoryRateLimitMiddleware)
 @app.on_event("startup")
 def startup(): store.init_db()
 @app.get("/health")
-def health(): return {"status":"ok","llm_mode":LLM_MODE,"max_agent_steps":MAX_AGENT_STEPS,
-    "market_data":market_data.status(),"rate_limit":rate_limit.status(),"hosted_model":llm_status()}
+def health():
+    hosted=llm_status()
+    return {"status":"ok","llm_mode":hosted["mode"],"max_agent_steps":MAX_AGENT_STEPS,
+        "market_data":market_data.status(),"rate_limit":rate_limit.status(),
+        "hosted_model":hosted,"embeddings":embeddings.status()}
 
 @app.get("/api/v1/llm/status")
 def hosted_model_status(): return llm_status()
+
+@app.get("/api/v1/llm/models")
+def hosted_models():
+    st=llm_status()
+    return {"active_selection":st["active_selection"],"models":st["available_models"],"status":st}
+
+@app.post("/api/v1/llm/select")
+def select_llm(req:ModelSelectionRequest):
+    try:
+        return llm_select_model(
+            selection=req.selection,
+            mode=req.mode,
+            model=req.model,
+            base_url=req.base_url,
+            api_key=req.api_key,
+            ca_cert_file=req.ca_cert_file,
+        )
+    except ValueError as exc:
+        raise HTTPException(422,str(exc)) from exc
+
+@app.get("/api/v1/embeddings/status")
+def embedding_status(): return embeddings.status()
+
+@app.post("/api/v1/embeddings/config")
+def configure_embeddings(req:EmbeddingConfigRequest):
+    try:
+        return embeddings.configure(
+            mode=req.mode,
+            base_url=req.base_url,
+            api_key=req.api_key,
+            model=req.model,
+            ca_cert_file=req.ca_cert_file,
+        )
+    except ValueError as exc:
+        raise HTTPException(422,str(exc)) from exc
+
 @app.post("/api/v1/ai/chat")
 async def chat(req:ChatRequest):
-    trace=await run_agent(req.query,req.employee_id,req.grade,req.organization_id); store.save_trace(trace); return trace
+    travel_context=req.travel_context.model_dump(exclude_none=True) if req.travel_context else None
+    trace=await run_agent(req.query,req.employee_id,req.grade,req.organization_id,travel_context=travel_context,model_override=req.model); store.save_trace(trace); return trace
 @app.post("/api/v1/travel/requests")
 def travel(req:TravelRequest):
     rid=store.save_travel(req.model_dump()); return {"request_id":rid,"status":"submitted"}
@@ -118,7 +158,7 @@ async def ingest_policy(file:UploadFile=File(...),organization_id:str=Form("defa
 @app.post("/api/v1/receipts/extract")
 def receipt(req:ReceiptTextRequest): return tools.receipt_extract(req.text)
 @app.post("/api/v1/ai/policy-search")
-def policy_search(query:str,grade:str="M6",organization_id:str="default"):
+def policy_search(query:str,grade:str="ALL",organization_id:str="default"):
     try:
         return tools.policy_search(query,grade,organization_id)
     except ValueError as exc:
