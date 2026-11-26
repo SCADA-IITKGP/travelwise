@@ -5,6 +5,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY backend ./backend
 COPY scripts ./scripts
 COPY data ./data
+COPY evaluation ./evaluation
 RUN useradd -u 10001 -m appuser && chown -R 10001:0 /app
 USER 10001
 EXPOSE 8000

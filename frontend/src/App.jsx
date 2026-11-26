@@ -2,8 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   Activity, ArrowDownLeft, ArrowLeftRight, ArrowRight, ArrowUpRight, BadgeCheck, BarChart3,
   Bell, BookOpen, Building2, CalendarDays, Check, CheckCircle2, ChevronDown, CircleHelp,
-  Clock3, CloudUpload, Compass, CreditCard, FileCheck2, FileText, Globe2, Hotel, LayoutDashboard,
-  LoaderCircle, LockKeyhole, LogOut, Menu, MessageSquareText, Plane, Plus, RefreshCw, Search,
+  Clock3, CloudUpload, Compass, CreditCard, ExternalLink, FileCheck2, FileText, Globe2, Hotel, Layers, LayoutDashboard,
+  LoaderCircle, LockKeyhole, LogOut, Menu, MessageSquareText, Plane, Play, Plus, RefreshCw, Search,
   Send, ShieldCheck, Sparkles, TrendingUp, Upload, Wallet, X,
 } from 'lucide-react'
 
@@ -16,8 +16,12 @@ const NAV = [
   { id: 'operations', label: 'Operations', icon: Activity },
 ]
 const CURRENCIES = ['INR', 'USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'SGD', 'AED', 'CHF']
-const DESTINATION_COUNTRIES = ['Australia', 'France', 'Germany', 'India', 'Japan', 'Singapore', 'United Arab Emirates', 'United Kingdom', 'United States', 'Other']
-const EMPLOYEE_GRADES = ['G1', 'G2', 'G3', 'G4', 'G5', 'G6', 'G7', 'G8']
+const DESTINATION_COUNTRIES = [
+  'Australia', 'Brazil', 'Canada', 'China', 'Denmark', 'France', 'Germany', 'India', 'Indonesia', 'Ireland',
+  'Italy', 'Japan', 'Malaysia', 'Mexico', 'Netherlands', 'New Zealand', 'Poland', 'Singapore', 'South Africa',
+  'South Korea', 'Spain', 'Sweden', 'Switzerland', 'United Kingdom', 'United States', 'Other',
+]
+const EMPLOYEE_GRADES = ['G1', 'G2', 'G3', 'G4', 'G5']
 const DEFAULT_GRADE = 'M6'
 
 async function api(path, options = {}) {
@@ -179,6 +183,7 @@ function Assistant({ org, policy, onPolicyChanged, health, onHealthChanged }) {
   const [tripType, setTripType] = useState('')
   const [query, setQuery] = useState('')
   const [history, setHistory] = useState([])
+  const [sessionId, setSessionId] = useState(() => `SES-${Math.random().toString(36).slice(2, 10)}`)
   const [loading, setLoading] = useState(false)
   const [modelBusy, setModelBusy] = useState(false)
   const [error, setError] = useState('')
@@ -237,6 +242,7 @@ function Assistant({ org, policy, onPolicyChanged, health, onHealthChanged }) {
           employee_id: 'EMP1001',
           organization_id: org,
           model: hostedInfo.model || 'Qwen/Qwen3-8B',
+          session_id: sessionId,
           ...(employeeGrade ? { grade: employeeGrade } : {}),
           ...(hasContext ? { travel_context: travelContext } : {}),
         }
@@ -259,8 +265,14 @@ function Assistant({ org, policy, onPolicyChanged, health, onHealthChanged }) {
   const latestResult = history.filter((item) => item.role === 'assistant').at(-1)?.result
   const latestDocs = latestResult?.documents || latestResult?.tool_results?.policy_search?.documents || []
 
+  const newSession = () => {
+    setHistory([])
+    setError('')
+    setSessionId(`SES-${Math.random().toString(36).slice(2, 10)}`)
+  }
+
   return <div className="page-content">
-    <PageHeading eyebrow="POLICY INTELLIGENCE" title="Policy assistant" subtitle="Answers grounded in your organization’s policy documents, with the sources shown alongside." action={<div className="assistant-heading-actions"><span className="secure-label"><ShieldCheck size={15} /> Evidence-backed</span><Button variant="secondary" icon={Sparkles} onClick={() => setProviderOpen(true)}>Model &amp; embeddings</Button><Button variant="secondary" icon={Upload} onClick={() => setIngestOpen(true)}>Add documents</Button></div>} />
+    <PageHeading eyebrow="POLICY INTELLIGENCE" title="Policy assistant" subtitle="Answers grounded in your organization’s policy documents, with the sources shown alongside." action={<div className="assistant-heading-actions"><span className="secure-label"><ShieldCheck size={15} /> Evidence-backed</span>{history.length > 0 && <Button variant="secondary" icon={RefreshCw} onClick={newSession}>New chat</Button>}<Button variant="secondary" icon={Sparkles} onClick={() => setProviderOpen(true)}>Model &amp; embeddings</Button><Button variant="secondary" icon={Upload} onClick={() => setIngestOpen(true)}>Add documents</Button></div>} />
     {!generatedResponsesAvailable && <div className="model-notice"><div className="model-notice-icon"><Sparkles size={16} /></div><div><strong>Evidence-only mode</strong><span>No hosted language model is configured. Select <code>Qwen/Qwen3-8B</code> and connect your approved provider key &amp; CA certificate (<code>vm04-ca.crt</code>) before enabling generated responses.</span></div><Button variant="secondary" onClick={() => setProviderOpen(true)}>Select model</Button><span className="mode-chip">NO MODEL</span></div>}
     <div className="assistant-layout">
       <section className="assistant-main card">
@@ -411,15 +423,145 @@ function Rates() {
 }
 
 function Operations({ org, health, policy, analytics, refresh }) {
-  const [fx, setFx] = useState(null); const [model, setModel] = useState(null); const [traces, setTraces] = useState([]); const [selected, setSelected] = useState(null); const [loading, setLoading] = useState(false); const [error, setError] = useState('')
-  const load = async () => { setLoading(true); setError(''); try { const [f, m, t] = await Promise.all([get('/api/v1/market/status'), get('/api/v1/llm/status'), get('/api/v1/traces', { limit: 100 })]); setFx(f); setModel(m); setTraces(t || []); setSelected(null); refresh() } catch (e) { setError(e.message) } finally { setLoading(false) } }
+  const [fx, setFx] = useState(null)
+  const [model, setModel] = useState(null)
+  const [traces, setTraces] = useState([])
+  const [selected, setSelected] = useState(null)
+  const [pipeline, setPipeline] = useState(null)
+  const [diagQuery, setDiagQuery] = useState('What receipts are required for expense reimbursement?')
+  const [diagResult, setDiagResult] = useState(null)
+  const [diagBusy, setDiagBusy] = useState(false)
+  const [evSource, setEvSource] = useState('evaluation')
+  const [evSummary, setEvSummary] = useState(null)
+  const [evBusy, setEvBusy] = useState(false)
+  const [evNonce, setEvNonce] = useState(0)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const load = async () => {
+    setLoading(true); setError('')
+    try {
+      const [f, m, t, p] = await Promise.all([
+        get('/api/v1/market/status'),
+        get('/api/v1/llm/status'),
+        get('/api/v1/traces', { limit: 100 }),
+        get('/api/v1/observability/pipeline'),
+      ])
+      setFx(f); setModel(m); setTraces(t || []); setPipeline(p); setSelected(null); refresh()
+    } catch (e) { setError(e.message) } finally { setLoading(false) }
+  }
+
+  const loadEvidently = async (source = evSource, forceRun = false) => {
+    setEvBusy(true)
+    try {
+      const data = forceRun
+        ? await postQuery('/api/v1/observability/evidently/run', { source })
+        : await get('/api/v1/observability/evidently/summary', { source })
+      setEvSummary(data)
+      setEvNonce((n) => n + 1)
+    } catch (e) { setError(e.message || 'Could not generate Evidently report.') }
+    finally { setEvBusy(false) }
+  }
+
+  const runDiagnostic = async (e) => {
+    e?.preventDefault()
+    if (!diagQuery.trim() || diagBusy) return
+    setDiagBusy(true); setError('')
+    try {
+      const res = await post('/api/v1/observability/pipeline/test', {
+        query: diagQuery.trim(),
+        organization_id: org || 'globaltech',
+      })
+      setDiagResult(res)
+    } catch (err) { setError(err.message || 'Pipeline diagnostic failed.') }
+    finally { setDiagBusy(false) }
+  }
+
   useEffect(() => { load() }, [org])
-  const failures = analytics?.failure_taxonomy || {}; const maxFailure = Math.max(1, ...Object.values(failures))
-  return <div className="page-content"><PageHeading eyebrow="SYSTEM HEALTH" title="Operations" subtitle="Monitor service health, policy coverage and recent assistant activity." action={<Button variant="secondary" icon={loading ? LoaderCircle : RefreshCw} onClick={load} disabled={loading}>Refresh</Button>} />
+  useEffect(() => { loadEvidently(evSource, false) }, [evSource])
+
+  const failures = analytics?.failure_taxonomy || {}
+  const maxFailure = Math.max(1, ...Object.values(failures))
+  const levels = pipeline?.levels || []
+  const evidentlyReportUrl = `/api/v1/observability/evidently/report?source=${evSource}&v=${evNonce}`
+  const requestTrend = useMemo(() => {
+    const byDay = new Map()
+    traces.forEach((trace) => {
+      const day = trace.created_at ? new Date(trace.created_at).toISOString().slice(0, 10) : ''
+      if (!day) return
+      const item = byDay.get(day) || { day, total: 0, failed: 0 }
+      item.total += 1
+      if (trace.status === 'failed' || trace.status === 'blocked') item.failed += 1
+      byDay.set(day, item)
+    })
+    return [...byDay.values()].sort((a, b) => a.day.localeCompare(b.day)).slice(-7)
+  }, [traces])
+  const maxTrend = Math.max(1, ...requestTrend.map((item) => item.total))
+  const successRate = analytics?.success_rate ?? 0
+
+  return <div className="page-content operations-page"><PageHeading eyebrow="SYSTEM HEALTH" title="Operations" subtitle="A live view of service reliability, request activity, and assistant performance." action={<Button variant="secondary" icon={loading ? LoaderCircle : RefreshCw} onClick={load} disabled={loading}>Refresh</Button>} />
     {error && <div className="inline-error">{error}</div>}
     <div className="ops-kpis"><div className="ops-kpi card"><span>Total assistant requests</span><strong>{analytics?.total_queries ?? '—'}</strong><small>Recorded traces</small></div><div className="ops-kpi card"><span>Successful</span><strong className="text-green">{analytics?.successful ?? '—'}</strong><small>{analytics?.success_rate != null ? `${Math.round(analytics.success_rate * 100)}% success rate` : 'No data yet'}</small></div><div className="ops-kpi card"><span>Failed or degraded</span><strong className="text-amber">{analytics?.failed ?? '—'}</strong><small>Requires attention</small></div><div className="ops-kpi card"><span>Average latency</span><strong>{analytics?.average_latency_ms ? `${Math.round(analytics.average_latency_ms)} ms` : '—'}</strong><small>Recent requests</small></div></div>
+    <div className="ops-charts-grid">
+      <section className="card ops-chart-card">
+        <div className="ops-card-header"><div><h2>Request activity</h2><p>Assistant traces by day · last 7 active days</p></div><TrendingUp size={18} className="muted-icon" /></div>
+        {requestTrend.length ? <div className="request-chart" role="img" aria-label="Assistant request activity by day">
+          {requestTrend.map((item) => <div className="request-chart-column" key={item.day} title={`${item.total} requests, ${item.failed} failed`}><span className="request-chart-count">{item.total}</span><div className="request-chart-track"><i style={{ height: `${Math.max(8, item.total / maxTrend * 100)}%` }} /><b style={{ height: `${item.total ? item.failed / item.total * 100 : 0}%` }} /></div><span className="request-chart-day">{new Date(`${item.day}T12:00:00`).toLocaleDateString([], { month: 'short', day: 'numeric' })}</span></div>)}
+        </div> : <div className="chart-empty">Request activity will appear when assistant traces are recorded.</div>}
+      </section>
+      <section className="card ops-chart-card">
+        <div className="ops-card-header"><div><h2>Service reliability</h2><p>Successful outcomes across all recorded requests</p></div><ShieldCheck size={18} className="muted-icon" /></div>
+        <div className="reliability-chart"><div className="reliability-donut" style={{ '--success-rate': `${Math.max(0, Math.min(100, successRate * 100))}%` }}><div><strong>{analytics?.success_rate != null ? `${Math.round(successRate * 100)}%` : '—'}</strong><span>success</span></div></div><div className="reliability-legend"><div><i className="legend-success"/><span>Successful</span><strong>{analytics?.successful ?? '—'}</strong></div><div><i className="legend-failed"/><span>Failed or degraded</span><strong>{analytics?.failed ?? '—'}</strong></div><small>Based on {analytics?.total_queries ?? 0} recorded requests</small></div></div>
+      </section>
+    </div>
     <div className="ops-grid"><section className="card ops-card"><div className="ops-card-header"><div><h2>Service health</h2><p>Current provider and model status</p></div><span className={`status-pill ${health ? 'status-healthy' : 'status-review'}`}><i />{health ? 'Healthy' : 'Unavailable'}</span></div><div className="health-row"><div className="health-icon health-blue"><Activity size={17} /></div><div className="health-label"><strong>API service</strong><span>Rate limit · {health?.rate_limit?.limit ?? '—'} requests / {health?.rate_limit?.window_seconds ?? '—'} sec</span></div><span className="health-value">{health?.status || 'Unknown'}</span></div><div className="health-row"><div className="health-icon health-purple"><Sparkles size={17} /></div><div className="health-label"><strong>Response model</strong><span>{model?.model || 'Qwen/Qwen3-8B'} · {model?.endpoint_host || 'not configured'}</span></div><span className="health-value">{model?.configured ? model?.mode : 'evidence-only'}</span></div><div className="health-row"><div className="health-icon health-blue"><Search size={17} /></div><div className="health-label"><strong>Embedding model</strong><span>{health?.embeddings?.model || 'bge-small-en-v1.5'} · {health?.embeddings?.dimensions || 384}d · {health?.embeddings?.configured ? health?.embeddings?.mode : 'tfidf fallback'}</span></div><span className="health-value">{health?.embeddings?.configured ? 'ready' : 'unconfigured'}</span></div><div className="health-row"><div className="health-icon health-teal"><Globe2 size={17} /></div><div className="health-label"><strong>FX provider</strong><span>{fx?.provider || 'Frankfurter'} · {fx?.cache_entries ?? 0} cached rates</span></div><span className="health-value">{fx?.circuit_breaker || '—'}</span></div><div className="health-row"><div className="health-icon health-green"><BookOpen size={17} /></div><div className="health-label"><strong>Policy source</strong><span>{policy?.document_count ?? 0} docs · {policy?.clause_count ?? 0} chunks · {org}</span></div><span className="health-value">{policy?.status || '—'}</span></div></section>
       <section className="card ops-card"><div className="ops-card-header"><div><h2>Failure categories</h2><p>Recent query outcomes by category</p></div><BarChart3 size={18} className="muted-icon" /></div>{Object.keys(failures).length ? <div className="failure-bars">{Object.entries(failures).map(([name, value]) => <div className="failure-row" key={name}><div><span>{name.replaceAll('_', ' ')}</span><strong>{value}</strong></div><div className="bar-track"><i style={{ width: `${(value / maxFailure) * 100}%` }} /></div></div>)}</div> : <div className="empty-state"><div><ShieldCheck size={22} /></div><strong>No failures recorded</strong><span>Failure categories will appear here as requests are processed.</span></div>}</section></div>
+
+    <section className="card trace-card">
+      <div className="ops-card-header"><div><h2>How the model works · Stage-by-stage architecture &amp; results</h2><p>Inspect each pipeline level, evaluation metrics, and run a live level-by-level diagnostic</p></div><Layers size={18} className="muted-icon" /></div>
+      <div className="ops-levels-grid">
+        {levels.map((lvl) => <article className="ops-level-card" key={lvl.level}>
+          <div className="ops-level-top"><span className="ops-level-badge">Level {lvl.level}</span><code>{lvl.module}</code></div>
+          <strong>{lvl.name}</strong>
+          <p>{lvl.how_it_works}</p>
+          <pre className="ops-level-metrics">{JSON.stringify(lvl.metrics, null, 2)}</pre>
+        </article>)}
+      </div>
+      <form className="ops-diag-bar" onSubmit={runDiagnostic}>
+        <input value={diagQuery} onChange={(e) => setDiagQuery(e.target.value)} placeholder="Enter a policy question to inspect every pipeline level…" />
+        <Button icon={diagBusy ? LoaderCircle : Play} disabled={diagBusy || !diagQuery.trim()}>{diagBusy ? 'Running levels…' : 'Run pipeline test'}</Button>
+      </form>
+      {diagResult && <div className="ops-diag-results">
+        {diagResult.levels?.map((stage) => <div className="ops-diag-stage" key={stage.level}>
+          <div className="ops-diag-stage-head"><strong>Level {stage.level} · {stage.name}</strong><span className="trace-status trace-success">{stage.status || stage.llm_mode}</span></div>
+          <pre>{JSON.stringify(stage, null, 2)}</pre>
+        </div>)}
+      </div>}
+    </section>
+
+    <section className="card trace-card">
+      <div className="ops-card-header">
+        <div><h2>Evidently AI observability report</h2><p>Interactive Evidently {evSummary?.evidently_version || '0.7.23'} DataSummary &amp; TextEvals dashboard embedded in UI</p></div>
+        <div className="ops-evidently-actions">
+          <Select value={evSource} onChange={(e) => setEvSource(e.target.value)}>
+            <option value="evaluation">Golden Evaluation (70 cases)</option>
+            <option value="traces">Live Assistant Traces</option>
+          </Select>
+          <Button variant="secondary" icon={evBusy ? LoaderCircle : RefreshCw} onClick={() => loadEvidently(evSource, true)} disabled={evBusy}>{evBusy ? 'Generating…' : 'Refresh report'}</Button>
+          <a className="button button-secondary" href={evidentlyReportUrl} target="_blank" rel="noreferrer"><ExternalLink size={15} /> Open HTML</a>
+        </div>
+      </div>
+      {evSummary && <div className="ops-evidently-meta">
+        <span>Dataset rows: <strong>{evSummary.row_count}</strong></span>
+        <span>Metrics computed: <strong>{evSummary.metrics_count}</strong></span>
+        <span>Descriptors: <strong>{evSummary.descriptors?.join(', ')}</strong></span>
+        <span>Generated: <strong>{dateLabel(evSummary.generated_at)}</strong></span>
+      </div>}
+      <div className="evidently-frame-wrap">
+        <iframe key={evidentlyReportUrl} title="Evidently AI Report" src={evidentlyReportUrl} className="evidently-frame" />
+      </div>
+    </section>
+
     <section className="card trace-card"><div className="ops-card-header"><div><h2>Recent assistant activity</h2><p>Audit traces for policy questions</p></div><span className="trace-count">{traces.length} records</span></div>{traces.length ? <div className="table-wrap"><table><thead><tr><th>Trace ID</th><th>Created</th><th>Employee</th><th>Status</th><th>Steps</th><th>Latency</th><th>Category</th></tr></thead><tbody>{traces.map((row) => <tr key={row.trace_id} onClick={() => get(`/api/v1/traces/${row.trace_id}`).then(setSelected)}><td className="mono">{row.trace_id}</td><td>{dateLabel(row.created_at)}</td><td>{row.employee_id}</td><td><span className={`trace-status trace-${row.status}`}>{row.status}</span></td><td>{row.steps}</td><td>{row.latency_ms} ms</td><td>{row.failure_category || '—'}</td></tr>)}</tbody></table></div> : <div className="table-empty"><FileText size={20} /><strong>No assistant traces yet</strong><span>Queries to the policy assistant will appear here.</span></div>}{selected && <div className="trace-detail"><div><strong>Trace details · {selected.trace_id}</strong><button className="icon-button" onClick={() => setSelected(null)}><X size={16} /></button></div><pre>{JSON.stringify(selected.trace, null, 2)}</pre></div>}</section>
     {policy?.synthetic_document_count > 0 && <div className="ops-disclaimer"><CircleHelp size={15} /> The {policy.synthetic_document_count} loaded GlobalTech policies are synthetic test data. The supplied guide describes {policy.full_corpus_expected_documents} documents; {policy.document_count} are currently loaded.</div>}
   </div>

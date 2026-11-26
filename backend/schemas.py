@@ -13,6 +13,16 @@ class ChatRequest(BaseModel):
     organization_id: str = Field(default="default", min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
     travel_context: Optional[TravelContext] = None
     model: Optional[str] = Field(default=None, max_length=128)
+    session_id: Optional[str] = Field(default=None, max_length=64)
+    prompt_strategy: Literal["v1_baseline", "v2_grounded", "v3_structured_critic"] = "v3_structured_critic"
+
+
+class StructuredAgentOutput(BaseModel):
+    answer: str
+    citations: list[str] = Field(default_factory=list)
+    missing_inputs: list[str] = Field(default_factory=list)
+    recommended_action: Literal["answer", "clarify", "abstain", "refuse", "escalate"] = "answer"
+    requires_human_approval: bool = False
 
 
 class ModelSelectionRequest(BaseModel):
@@ -30,6 +40,12 @@ class EmbeddingConfigRequest(BaseModel):
     base_url: Optional[str] = Field(default=None, max_length=500)
     api_key: Optional[str] = Field(default=None, max_length=500)
     ca_cert_file: Optional[str] = Field(default=None, max_length=500)
+
+
+class PipelineDiagnosticRequest(BaseModel):
+    query: str = Field(default="What receipts are required for expense reimbursement?", min_length=3, max_length=2000)
+    organization_id: str = Field(default="globaltech", min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+    travel_context: Optional[TravelContext] = None
 
 class TravelRequest(BaseModel):
     employee_id: str

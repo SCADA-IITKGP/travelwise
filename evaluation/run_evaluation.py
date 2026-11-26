@@ -5,7 +5,7 @@ import json
 import pathlib
 import re
 
-from backend.agents import SYSTEM_PROMPT, run_agent
+from backend.agents import PROMPT_STRATEGIES, SYSTEM_PROMPT, run_agent
 from backend.llm import current_mode as current_llm_mode
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -86,6 +86,22 @@ def verify_prompt(prompt_text=SYSTEM_PROMPT):
         "prompt_length_chars": len(prompt_text),
         "invariants": checks,
     }
+
+
+def compare_prompt_strategies():
+    """Compare all configured prompt engineering strategies against required invariants."""
+    comparison = {}
+    for strategy_id, prompt_text in PROMPT_STRATEGIES.items():
+        report = verify_prompt(prompt_text)
+        passed_count = sum(1 for v in report["invariants"].values() if v["passed"])
+        comparison[strategy_id] = {
+            "invariants_passed": passed_count,
+            "invariants_total": len(report["invariants"]),
+            "passed_all": report["passed"],
+            "structured_json_output": "structured output" in prompt_text.lower(),
+            "prompt_length_chars": report["prompt_length_chars"],
+        }
+    return comparison
 
 
 def _doc_id(citation_id):
@@ -224,6 +240,7 @@ async def evaluate():
         "corpus_citation_recall": citation_recall,
         "security_pass_rate": security_pass_rate,
         "prompt_verification": prompt_check,
+        "prompt_strategy_comparison": compare_prompt_strategies(),
         "release_gate": release_gate,
         "results": results,
     }

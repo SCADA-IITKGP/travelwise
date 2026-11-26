@@ -1,6 +1,7 @@
-"""Retrieval-only baseline across the golden evaluation dataset."""
+"""Retrieval-only baseline across the golden evaluation dataset (Recall@K, MRR, nDCG@K)."""
 
 import json
+import math
 import pathlib
 import subprocess
 import time
@@ -15,6 +16,23 @@ def _doc_id(citation_id):
     return citation_id.split("#", 1)[0]
 
 
+def _mrr_and_ndcg(retrieved_doc_ids, expected_citations, k=6):
+    if not expected_citations:
+        return None, None
+    exp_set = set(expected_citations)
+    rr = 0.0
+    dcg = 0.0
+    for idx, doc_id in enumerate(retrieved_doc_ids[:k], start=1):
+        if doc_id in exp_set:
+            if rr == 0.0:
+                rr = 1.0 / idx
+            dcg += 1.0 / math.log2(idx + 1)
+    ideal_hits = min(len(exp_set), k)
+    idcg = sum(1.0 / math.log2(idx + 1) for idx in range(1, ideal_hits + 1))
+    ndcg = (dcg / idcg) if idcg > 0 else 0.0
+    return rr, ndcg
+
+
 def main():
     cases = json.loads((ROOT / "evaluation/gold_cases.json").read_text(encoding="utf-8"))
     out = []
@@ -26,6 +44,7 @@ def main():
         retrieved_doc_ids = list(dict.fromkeys(_doc_id(d["id"]) for d in docs))
         exp = c.get("expected_citations", [])
         citation_hit = any(item in retrieved_doc_ids for item in exp) if exp else None
+        rr, ndcg = _mrr_and_ndcg(retrieved_doc_ids, exp, k=6)
         out.append(
             {
                 "id": c["id"],
@@ -35,6 +54,8 @@ def main():
                 "retrieved_doc_ids": retrieved_doc_ids,
                 "expected_citations": exp,
                 "citation_hit": citation_hit,
+                "reciprocal_rank": round(rr, 4) if rr is not None else None,
+                "ndcg_at_6": round(ndcg, 4) if ndcg is not None else None,
                 "blocked": bool(blocked),
                 "latency_ms": round((time.perf_counter() - t) * 1000, 2),
             }
@@ -53,6 +74,12 @@ def main():
         "corpus_citation_recall_at_6": round(
             sum(1 for x in with_citations if x["citation_hit"]) / len(with_citations), 4
         )
+        if with_citations
+        else 0.0,
+        "mrr": round(sum(x["reciprocal_rank"] for x in with_citations) / len(with_citations), 4)
+        if with_citations
+        else 0.0,
+        "ndcg_at_6": round(sum(x["ndcg_at_6"] for x in with_citations) / len(with_citations), 4)
         if with_citations
         else 0.0,
         "results": out,

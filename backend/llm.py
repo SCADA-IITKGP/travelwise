@@ -1,6 +1,7 @@
 """Verified hosted-model client with runtime model selection, key-level queueing, and bounded retries."""
 
 import asyncio
+import re
 import ssl
 import time
 from collections import deque
@@ -258,9 +259,12 @@ async def generate(system_prompt: str, user_prompt: str, model_override: str | N
         response = await _request("POST", _chat_url(), json_body=body, model_override=active_model)
         payload = response.json()
         content = payload["choices"][0]["message"]["content"]
-        if not isinstance(content, str) or not content.strip():
+        if not isinstance(content, str):
             raise LLMError("Hosted API returned an empty or unsupported response.")
-        return content.strip()
+        cleaned = re.sub(r"<think>.*?</think>", "", content, flags=re.S).strip()
+        if not cleaned:
+            raise LLMError("Hosted API returned an empty or unsupported response.")
+        return cleaned
     except LLMError:
         raise
     except (KeyError, ValueError, TypeError) as exc:

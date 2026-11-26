@@ -59,7 +59,21 @@ def extract_text(path):
     if suffix == ".docx":
         with zipfile.ZipFile(path) as archive:
             root = ElementTree.fromstring(archive.read("word/document.xml"))
-        return "\n".join("".join(node.itertext()) for node in root.iter() if node.tag.endswith("}p"))
+        w_ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+        lines = []
+        for node in root.iter(f"{w_ns}p"):
+            text = "".join(t.text or "" for t in node.iter(f"{w_ns}t")).strip()
+            if not text:
+                continue
+            pstyle = node.find(f"{w_ns}pPr/{w_ns}pStyle")
+            style_val = pstyle.attrib.get(f"{w_ns}val", "") if pstyle is not None else ""
+            if style_val.lower().startswith(("heading", "title")):
+                lines.append(f"\n# {text}\n")
+            elif "list" in style_val.lower():
+                lines.append(f"- {text}")
+            else:
+                lines.append(text)
+        return "\n".join(lines)
     raise ValueError(f"Unsupported document type: {suffix or 'no extension'}")
 
 
@@ -205,16 +219,17 @@ def load_docs(organization_id="default"):
                 suffix = f"#clause-{index}" + (f"-chunk-{chunk_index}" if len(clause) > 1200 else "")
                 document_id = metadata.get("document_id") or rel_id
                 search_fields = [metadata.get(field, "") for field in
-                                 ("title", "description", "batch", "category", "jurisdiction", "version", "effective_date")]
+                                 ("document_id", "title", "description", "batch", "category", "jurisdiction", "version", "effective_date", "parent_or_related_series")]
                 docs.append({"id": f"{document_id}{suffix}", "document_id": document_id,
                              "organization_id": org, "grade": "ALL", "text": chunk,
                              "source_file": path.name, "title": metadata.get("title", path.stem),
+                             "description": metadata.get("description", ""),
                              "batch": metadata.get("batch"), "category": metadata.get("category"),
                              "jurisdiction": metadata.get("jurisdiction"), "version": metadata.get("version"),
                              "effective_date": metadata.get("effective_date"),
                              "synthetic": str(metadata.get("synthetic", "")).lower() == "true",
-                             "title_text": " ".join(filter(None, [metadata.get("title", ""), metadata.get("description", "")])),
-                             "search_text": " ".join([chunk, *search_fields])})
+                             "title_text": " ".join(filter(None, [metadata.get("document_id", ""), metadata.get("title", ""), metadata.get("description", ""), metadata.get("jurisdiction", "")])),
+                             "search_text": " ".join(filter(None, [chunk, *search_fields]))})
     return docs
 
 
@@ -232,11 +247,13 @@ def _index_for(organization_id):
     if not docs:
         _indexes.pop(org, None)
         _embedding_cache.pop(org, None)
-        return signature, [], None, None
-    vectorizer = TfidfVectorizer(ngram_range=(1, 2), stop_words="english")
+        return signature, [], None, None, None, None
+    vectorizer = TfidfVectorizer(ngram_range=(1, 2), stop_words="english", sublinear_tf=True)
     matrix = vectorizer.fit_transform([d.get("search_text", d["text"]) for d in docs])
-    _indexes[org] = (signature, docs, vectorizer, matrix)
-    return signature, docs, vectorizer, matrix
+    char_vec = TfidfVectorizer(analyzer="char_wb", ngram_range=(3, 5), sublinear_tf=True)
+    char_matrix = char_vec.fit_transform([d.get("title_text") or d.get("title", "") for d in docs])
+    _indexes[org] = (signature, docs, vectorizer, matrix, char_vec, char_matrix)
+    return signature, docs, vectorizer, matrix, char_vec, char_matrix
 
 
 def _embedding_scores(org, signature, docs, query):
@@ -258,47 +275,227 @@ def _embedding_scores(org, signature, docs, query):
         return None
 
 
-def retrieve(query, grade="M6", top_k=4, organization_id="default"):
-    org = normalize_organization(organization_id)
-    signature, docs, vectorizer, matrix = _index_for(org)
-    if not docs:
-        return []
-    qset = set(tokens(query))
-    qvec = vectorizer.transform([query])
-    vs = cosine_similarity(qvec, matrix)[0]
-    sem = _embedding_scores(org, signature, docs, query)
-    emb_mode = embeddings.current_mode()
-    ranked = []
-    for i, doc in enumerate(docs):
-        dt = tokens(doc.get("search_text", doc["text"]))
-        overlap = sum(1 for t in qset if t in dt)
-        lexical = overlap / (overlap + 1.2 + 0.25 * len(dt) / 20) if overlap else 0
-        tt = set(tokens(doc.get("title_text") or doc.get("title", "")))
-        title_overlap = sum(1 for t in qset if t in tt)
-        title_boost = 0.2 * (title_overlap / len(qset)) if qset and title_overlap else 0
-        bonus = 0.12 if doc["grade"] in (grade, "ALL") else -0.2
-        if sem is not None and emb_mode == "hosted":
-            score = float(sem[i]) + title_boost + bonus
-        elif sem is not None:
-            score = 0.45 * float(sem[i]) + 0.30 * float(vs[i]) + 0.25 * lexical + title_boost + bonus
-        else:
-            score = 0.55 * float(vs[i]) + 0.35 * lexical + title_boost + bonus
-        ranked.append((score, doc))
-    ranked.sort(key=lambda x: x[0], reverse=True)
+def cache_status():
+    return {
+        "tfidf_organizations_cached": len(_indexes),
+        "embedding_caches": len(_embedding_cache),
+        "metadata_caches": len(_metadata_cache),
+    }
+
+
+_COUNTRY_ALIASES = {
+    "australia": "Australia",
+    "sydney": "Australia",
+    "melbourne": "Australia",
+    "brazil": "Brazil",
+    "canada": "Canada",
+    "toronto": "Canada",
+    "china": "China",
+    "beijing": "China",
+    "shanghai": "China",
+    "denmark": "Denmark",
+    "france": "France",
+    "paris": "France",
+    "germany": "Germany",
+    "berlin": "Germany",
+    "munich": "Germany",
+    "india": "India",
+    "delhi": "India",
+    "bengaluru": "India",
+    "mumbai": "India",
+    "indonesia": "Indonesia",
+    "ireland": "Ireland",
+    "dublin": "Ireland",
+    "italy": "Italy",
+    "milan": "Italy",
+    "rome": "Italy",
+    "japan": "Japan",
+    "tokyo": "Japan",
+    "malaysia": "Malaysia",
+    "mexico": "Mexico",
+    "netherlands": "Netherlands",
+    "amsterdam": "Netherlands",
+    "new zealand": "New Zealand",
+    "poland": "Poland",
+    "singapore": "Singapore",
+    "south africa": "South Africa",
+    "south korea": "South Korea",
+    "korea": "South Korea",
+    "seoul": "South Korea",
+    "spain": "Spain",
+    "madrid": "Spain",
+    "sweden": "Sweden",
+    "switzerland": "Switzerland",
+    "zurich": "Switzerland",
+    "united kingdom": "United Kingdom",
+    "uk": "United Kingdom",
+    "london": "United Kingdom",
+    "united states": "United States",
+    "usa": "United States",
+    "new york": "United States",
+}
+
+_QUERY_EXPANSIONS = (
+    (r"\brent\b", "rental car vehicle"),
+    (r"\b(dinner|lunch|breakfast)\b", "meal hospitality food"),
+    (r"\bunavailable\b", "outage continuity fallback unavailable"),
+    (r"\b(later|after)\b", "retrospective after-the-fact"),
+    (r"\b(chest pain|sick|ill|hospital)\b", "medical emergency assistance repatriation"),
+    (r"\b(24/7|phone number|travel desk)\b", "after-hours support emergency contact"),
+    (r"\b(pretend|fake)\b", "approval confirmation segregation integrity"),
+    (r"\b(atlantis|country x)\b", "country addendum silent unlisted missing coverage"),
+    (r"\b(contacted|reach|uncontactable)\b", "missing uncontactable traveller escalation"),
+    (r"\b(book|booking)\b", "intake request completeness channel"),
+    (r"\b(contractor|subcontractor|vendor)\b", "external third-party contractor"),
+    (r"\b(five-star|client says|customer says)\b", "customer-requested customer-billable conflict precedence"),
+    (r"\b(approve|approver|who can approve)\b", "approval matrix authority tier segregation"),
+    (r"\bcabin class\b", "cabin class grade entitlement overlay"),
+    (r"\b(provided lunch|provided meal|already provided)\b", "actuals per diem duplicate meal deduction"),
+)
+
+
+def _expand_query(query):
+    extras = []
+    qlow = query.lower()
+    for pattern, addition in _QUERY_EXPANSIONS:
+        if re.search(pattern, qlow):
+            extras.append(addition)
+    return f"{query} {' '.join(extras)}" if extras else query
+
+
+def _detect_query_countries(qlow):
+    found = set()
+    for alias, canonical in _COUNTRY_ALIASES.items():
+        if re.search(rf"\b{re.escape(alias)}\b", qlow):
+            found.add(canonical)
+    return found
+
+
+def _rerank(query, candidates, top_k):
+    """Rerank candidates using phrase matching, metadata alignment, historical-version demotion, and document diversity."""
+    expanded = _expand_query(query)
+    qlow = expanded.lower()
+    qtokens = tokens(expanded)
+    bigrams = {f"{qtokens[i]} {qtokens[i + 1]}" for i in range(len(qtokens) - 1)}
+    asks_historical = any(w in qlow for w in ("historical", "archived", "superseded", "2025", "v0.", "previous version", "old version", "booked before", "amendment", "latest policy", "before the latest"))
+    countries = _detect_query_countries(qlow)
+
+    rescored = []
+    for base_score, doc in candidates:
+        title_low = (doc.get("title") or "").lower()
+        desc_low = (doc.get("description") or "").lower()
+        text_low = (doc.get("text") or "").lower()
+        search_low = (doc.get("search_text") or doc.get("text") or "").lower()
+        doc_id = (doc.get("document_id") or doc["id"]).upper()
+
+        phrase_hits = sum(1 for bg in bigrams if bg in title_low or bg in desc_low or bg in search_low)
+        phrase_boost = min(0.28, 0.09 * phrase_hits)
+
+        is_historical = "historical" in title_low or "archived" in search_low or "superseded" in search_low
+        version_adj = 0.08 if (asks_historical and is_historical) else (-0.12 if (is_historical and not asks_historical) else 0.0)
+        if asks_historical and "-AMD-" in doc_id:
+            version_adj += 0.14
+
+        meta_adj = 0.0
+        jur = doc.get("jurisdiction") or "Global"
+        if countries:
+            if jur in countries:
+                meta_adj += 0.08
+            elif jur != "Global":
+                meta_adj -= 0.30
+        elif jur != "Global":
+            # Prevent 25 country-addendum clones from crowding out Global/EXP/EXC/OPS/SAFE rules when no country is named.
+            meta_adj -= 0.30
+
+        if (len(countries) >= 2 or any(w in qlow for w in ("several countries", "multi-country", "three countries", "cross-border", "spans"))) and "-XBR-" in doc_id:
+            meta_adj += 0.18
+        if any(w in text_low for w in ("synthetic-data notice", "synthetic illustration only", "fictional globaltech technologies travel-policy corpus")):
+            meta_adj -= 0.15
+        if doc_id.lower() in qlow:
+            meta_adj += 0.5
+
+        rescored.append((base_score + phrase_boost + version_adj + meta_adj, doc))
+
+    rescored.sort(key=lambda x: x[0], reverse=True)
     selected = []
     seen_docs = set()
     overflow = []
-    for score, doc in ranked:
+    country_slots = 0
+    max_country_slots = 2 if countries else 1
+    for score, doc in rescored:
         if score <= 0:
             continue
         doc_key = doc.get("document_id") or doc["id"]
+        jur = doc.get("jurisdiction") or "Global"
         if doc_key not in seen_docs:
+            if jur != "Global" and country_slots >= max_country_slots:
+                overflow.append({"score": round(score, 4), **doc})
+                continue
             seen_docs.add(doc_key)
+            if jur != "Global":
+                country_slots += 1
             selected.append({"score": round(score, 4), **doc})
             if len(selected) >= top_k:
                 break
         else:
             overflow.append({"score": round(score, 4), **doc})
     if len(selected) < top_k:
+        for item in overflow:
+            if len(selected) >= top_k:
+                break
+            doc_key = item.get("document_id") or item["id"]
+            if doc_key not in seen_docs:
+                seen_docs.add(doc_key)
+                selected.append(item)
+    if len(selected) < top_k:
         selected.extend(overflow[: top_k - len(selected)])
-    return selected
+    return selected[:top_k]
+
+
+def retrieve(query, grade="M6", top_k=6, organization_id="default"):
+    org = normalize_organization(organization_id)
+    signature, docs, vectorizer, matrix, char_vec, char_matrix = _index_for(org)
+    if not docs:
+        return []
+    expanded = _expand_query(query)
+    qlow = expanded.lower()
+    qset = set(tokens(expanded))
+    countries = _detect_query_countries(qlow)
+    qvec = vectorizer.transform([expanded])
+    vs = cosine_similarity(qvec, matrix)[0]
+    cs = cosine_similarity(char_vec.transform([expanded]), char_matrix)[0]
+    sem = _embedding_scores(org, signature, docs, query)
+    emb_mode = embeddings.current_mode()
+    ranked = []
+    for i, doc in enumerate(docs):
+        dt = set(tokens(doc.get("search_text", doc["text"])))
+        overlap = sum(1 for t in qset if t in dt)
+        lexical = overlap / (overlap + 1.2 + 0.25 * len(dt) / 20) if overlap else 0
+        tt = set(tokens(doc.get("title_text") or doc.get("title", "")))
+        title_overlap = sum(1 for t in qset if t in tt)
+        title_boost = 0.25 * (title_overlap / len(qset)) if qset and title_overlap else 0
+        jur = doc.get("jurisdiction") or "Global"
+        jur_boost = 0.12 if (countries and jur in countries) else (-0.22 if (not countries and jur != "Global") else 0.0)
+        bonus = 0.12 if doc["grade"] in (grade, "ALL") else -0.2
+        if sem is not None and emb_mode == "hosted":
+            score = 0.70 * float(sem[i]) + 0.30 * float(cs[i]) + title_boost + jur_boost + bonus
+        elif sem is not None:
+            score = 0.35 * float(sem[i]) + 0.25 * float(vs[i]) + 0.25 * float(cs[i]) + 0.15 * lexical + title_boost + jur_boost + bonus
+        else:
+            score = 0.40 * float(vs[i]) + 0.35 * float(cs[i]) + 0.25 * lexical + title_boost + jur_boost + bonus
+        ranked.append((score, doc))
+    ranked.sort(key=lambda x: x[0], reverse=True)
+    # Cap chunks per document before reranking so one long document cannot crowd out other policies.
+    candidate_pool = []
+    doc_chunk_counts = {}
+    pool_limit = max(top_k * 10, 60)
+    for item in ranked:
+        doc_key = item[1].get("document_id") or item[1]["id"]
+        count = doc_chunk_counts.get(doc_key, 0)
+        if count >= 2:
+            continue
+        doc_chunk_counts[doc_key] = count + 1
+        candidate_pool.append(item)
+        if len(candidate_pool) >= pool_limit:
+            break
+    return _rerank(query, candidate_pool, top_k)
